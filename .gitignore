@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+*.spec
+data/
+config.json
+incident-backups/
+force-kill-results/
+world/
+logs/
+relay-recovery.json
+recovery-backups/
