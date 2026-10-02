@@ -36,23 +36,21 @@ def main():
         state = f"{major}.{minor}.{patch + 1}"
     stamp = {"state": state, "version": state}
     (ROOT / "release-state.json").write_text(json.dumps(stamp, indent=2) + "\n", encoding="utf-8")
-    paths = ROOT / "relay/paths.py"
+    paths = ROOT / "src/relay/paths.py"
     paths.write_text(re.sub(r'^VERSION="[^"]+"', f'VERSION="{state}"', paths.read_text(encoding="utf-8"), flags=re.M), encoding="utf-8")
     print("Building", state, flush=True)
     build(state)
-    # Explicit list: never stage worlds, credentials, settings, build output, or backups.
-    for name in (".gitignore", "MinecraftRelay.py", "relay", "tools", "apply-update.ps1",
-                 "Build-Windows.bat", "Publish-Git.bat", "Run-Source.bat", "Run-Source.vbs",
-                 "README.md", "release-state.json"):
+    # Explicit allowlist; never stage private configuration or compiled output.
+    roots = {".gitignore", "build.bat", "Publish-Git.bat",
+             "Run-Source.vbs", "requirements.txt", "config.example.json",
+             "README.md", "release-state.json"}
+    for name in sorted(roots | {"src", "tools", "resources"}):
         git("add", "--", name)
     for deleted in git("diff", "--name-only", "--diff-filter=D").splitlines():
-        if deleted == "README.txt" or deleted.startswith(".github/"):
+        if deleted in {"MinecraftRelay.py", "apply-update.ps1", "Build-Windows.bat", "Run-Source.bat"} or deleted.startswith("relay/"):
             git("add", "-u", "--", deleted)
-    allowed_roots = {".gitignore", "MinecraftRelay.py", "apply-update.ps1", "Build-Windows.bat",
-                     "Publish-Git.bat", "Run-Source.bat", "Run-Source.vbs", "README.md", "README.txt",
-                     "release-state.json", "update.json"}
     for name in git("diff", "--cached", "--name-only").splitlines():
-        if name not in allowed_roots and not name.startswith(("relay/", "tools/", ".github/")):
+        if name not in roots | {"MinecraftRelay.py", "apply-update.ps1", "channel.json", "Build-Windows.bat", "Run-Source.bat"} and not name.startswith(("src/", "tools/", "resources/", "relay/")):
             raise RuntimeError("Unexpected staged file; review before publishing: " + name)
     if git("diff", "--cached", "--name-only"):
         git("commit", "-m", "Release " + state)
@@ -62,7 +60,7 @@ def main():
     git("push", "origin", "v" + state)
     print("Uploading built EXE, dependencies and source package…", flush=True)
     url = api.publish(state, commit, ROOT / "dist")
-    manifest = json.loads((ROOT / "dist/update.json").read_text(encoding="utf-8"))
+    manifest = json.loads((ROOT / "dist/channel.json").read_text(encoding="utf-8"))
     for asset in manifest["assets"].values():
         digest = hashlib.sha256()
         with urllib.request.urlopen(asset["url"], timeout=60) as response:
@@ -71,8 +69,8 @@ def main():
         if digest.hexdigest() != asset["sha256"]:
             raise RuntimeError("Published download verification failed; update state was not advanced.")
     # Last operation: clients only see the version after its downloads are verified.
-    shutil.copy2(ROOT / "dist/update.json", ROOT / "update.json")
-    git("add", "--", "update.json")
+    shutil.copy2(ROOT / "dist/channel.json", ROOT / "channel.json")
+    git("add", "--", "channel.json")
     git("commit", "-m", "Publish update state " + state)
     git("push", "origin", "main")
     print("Published:", url, flush=True)

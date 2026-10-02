@@ -133,7 +133,8 @@ def run_gui(cmd,cwd=None,timeout=60):
     return value
 def which(name): return shutil.which(name)
 def find_playit():
-    for p in [r"C:\Program Files\playit_gg\bin\playit.exe",
+    from .paths import APP_DIR
+    for p in [str(APP_DIR/"playit/playit.exe"),r"C:\Program Files\playit_gg\bin\playit.exe",
               r"C:\Program Files\playit\playit.exe", which("playit")]:
         if p and Path(p).exists(): return str(p)
     return None

@@ -26,16 +26,23 @@ QPushButton#danger:pressed:enabled { background:#3b1515; }
 QSlider::groove:horizontal { height:6px; background:#777; border-radius:3px; }
 QSlider::handle:horizontal { width:22px; margin:-8px 0; border-radius:11px; background:#ddd; border:1px solid #555; }
 QSlider::handle:horizontal:hover { background:#fff; }""");app.setFont(QFont("Segoe UI",10));c=load_config()
+    updater=UpdateClient(app)
+    updater.start()
     if not c.get("setup_complete"):
         w=SetupWizard(c)
         if not w.exec():return
     m=Main();m.show()
-    updater=UpdateClient(m)
     updater.status.connect(m.update_status.setText)
-    if c.get("auto_update",True):
-        QTimer.singleShot(500,updater.start)
-    else:
-        m.update_status.setText("Automatic application updates are disabled.")
+    if updater.last_message:
+        m.update_status.setText(updater.last_message)
+    # Download in the background; never interrupt hosting or an unsynced session.
+    def apply_when_idle():
+        if updater.ready and m.state==IDLE and not m.recovery and not app.activeModalWidget():
+            m.close()
+    update_exit_timer=QTimer(m)
+    update_exit_timer.setInterval(1000)
+    update_exit_timer.timeout.connect(apply_when_idle)
+    update_exit_timer.start()
     if m.state==RECOVERY_REQUIRED:
         QMessageBox.warning(m,"Interrupted session detected",
             "A previous hosting session did not finish normally.\n\n"

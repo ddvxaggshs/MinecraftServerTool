@@ -4,7 +4,7 @@ cd /d "%~dp0"
 title Minecraft Relay - Build and Publish
 py --version >nul 2>nul
 if errorlevel 1 goto :fail
-py -m pip install PySide6 pyinstaller
+py -m pip install -r requirements.txt
 if errorlevel 1 goto :fail
 py tools\publish.py
 if errorlevel 1 goto :fail

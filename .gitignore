@@ -12,3 +12,9 @@ world/
 logs/
 relay-recovery.json
 recovery-backups/
+
+app/
+playit/
+updater.exe
+launcher.exe
+expired/

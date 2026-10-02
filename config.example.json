@@ -1,0 +1,11 @@
+{
+  "server_dir": "data/server",
+  "repo_url": "https://github.com/ddvxaggshs/Minecraft_server.git",
+  "git_remote": "origin",
+  "git_branch": "main",
+  "host_name": "Host-1",
+  "min_ram": "2G",
+  "max_ram": "4G",
+  "public_address": "",
+  "setup_complete": false
+}

@@ -5,7 +5,7 @@ Set shell = CreateObject("WScript.Shell")
 Set files = CreateObject("Scripting.FileSystemObject")
 folder = files.GetParentFolderName(WScript.ScriptFullName)
 shell.CurrentDirectory = folder
-source = files.BuildPath(folder, "MinecraftRelay.py")
+source = files.BuildPath(folder, "src\main.py")
 
 ' Use the GUI interpreter, not py.exe/python.exe with a hidden console.
 ' Python Install Manager can otherwise leave its console attached for the session.
@@ -46,6 +46,6 @@ End If
 ' pythonw has no console. Show the GUI normally; SW_HIDE also hides Qt's window.
 result = shell.Run(pythonw & " """ & source & """", 1, True)
 If result <> 0 Then
-    MsgBox "Minecraft Relay exited with an error. Run 'py MinecraftRelay.py' in a terminal from this folder to see the details.", 16, "Minecraft Relay"
+    MsgBox "Minecraft Relay exited with an error. Run 'py src/main.py' in a terminal from this folder to see the details.", 16, "Minecraft Relay"
 End If
 WScript.Quit result

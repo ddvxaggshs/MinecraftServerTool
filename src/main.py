@@ -1,4 +1,4 @@
-"""Stable entry point for source and packaged launches."""
+"""Main GUI entry point."""
 from relay.app import main
 
 if __name__ == "__main__":

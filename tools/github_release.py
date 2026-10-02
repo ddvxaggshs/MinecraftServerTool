@@ -27,7 +27,7 @@ class GitHubRelease:
         headers = {"Authorization": "Bearer " + self._token,
                    "User-Agent": "MinecraftRelay-Publisher", "Accept": "application/vnd.github+json"}
         if data is not None:
-            headers["Content-Type"] = "application/zip" if binary else "application/json"
+            headers["Content-Type"] = "application/octet-stream" if binary else "application/json"
         request = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
             with urllib.request.urlopen(request, timeout=180) as response:
@@ -44,11 +44,11 @@ class GitHubRelease:
         release = self.request("POST", API + "/releases", {
             "tag_name": "v" + state, "target_commitish": commit,
             "name": "Minecraft Relay " + state, "draft": True,
-            "body": "Windows ZIP includes MinecraftRelay.exe, its upgrade component and all runtime dependencies. Preserve your own data folder when upgrading.",
+            "body": "Download updater.exe into an empty folder and run it to install. Full ZIP layout: launcher.exe, updater.exe, app/, data/, playit/. Existing 3.8.x users must run the standalone updater once to migrate; their data is preserved.",
         })
         upload = release["upload_url"].split("{")[0]
-        for kind in ("source", "windows"):
-            path = folder / f"MinecraftRelay-{kind}.zip"
+        for name in ("updater.exe", "launcher.exe", "MinecraftManager-app.zip", "MinecraftManager-windows.zip", "MinecraftManager-source.zip"):
+            path = folder / name
             payload = path.read_bytes()
             asset = self.request("POST", upload + "?name=" + urllib.parse.quote(path.name), payload, binary=True)
             if asset.get("state") != "uploaded" or asset.get("size") != len(payload):

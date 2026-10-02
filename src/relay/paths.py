@@ -1,10 +1,9 @@
 import sys
 from pathlib import Path
 
-APP_DIR=Path(sys.executable).resolve().parent if getattr(sys,"frozen",False) else Path(__file__).resolve().parent.parent
-if getattr(sys,"frozen",False) and Path(sys.executable).name.lower()=="minecraftrelayupdater.exe":
-    APP_DIR=APP_DIR.parent
-VERSION="3.8.2"
+APP_DIR=(Path(sys.executable).resolve().parent.parent if getattr(sys,"frozen",False)
+         else Path(__file__).resolve().parents[2])
+VERSION="3.9.0"
 DATA_DIR=APP_DIR/"data"
 DATA_DIR.mkdir(parents=True,exist_ok=True)
 CONFIG_PATH=DATA_DIR/"config.json"

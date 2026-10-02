@@ -14,7 +14,7 @@ def clear_recovery():
     except: pass
 
 DEFAULTS={
- "server_dir":r"D:\MinecraftServer","repo_url":"https://github.com/ddvxaggshs/Minecraft_server.git",
+ "server_dir":str(DATA_DIR/"server"),"repo_url":"https://github.com/ddvxaggshs/Minecraft_server.git",
  "server_jar":"fabric-server-mc.1.21.11-loader.0.19.5-launcher.1.1.2.jar","java":"java",
  "min_ram":"2G","max_ram":"4G","git_remote":"origin","git_branch":"main","host_name":"Host-1",
  "public_address":"","playit_command":r"C:\Program Files\playit_gg\bin\playit.exe","setup_complete":False}
