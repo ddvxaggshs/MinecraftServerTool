@@ -7,7 +7,7 @@ from .paths import IDLE, RECOVERY_REQUIRED
 from .setup import SetupWizard
 from .window import Main
 from .instance import InstanceGuard
-from .updater import UpdateManager
+from .update_client import UpdateClient
 
 def main():
     app=QApplication(sys.argv)
@@ -30,7 +30,7 @@ QSlider::handle:horizontal:hover { background:#fff; }""");app.setFont(QFont("Seg
         w=SetupWizard(c)
         if not w.exec():return
     m=Main();m.show()
-    updater=UpdateManager(m)
+    updater=UpdateClient(m)
     updater.status.connect(m.update_status.setText)
     if c.get("auto_update",True):
         QTimer.singleShot(500,updater.start)
@@ -48,5 +48,6 @@ QSlider::handle:horizontal:hover { background:#fff; }""");app.setFont(QFont("Seg
     except Exception as error:
         from .paths import DATA_DIR
         (DATA_DIR/"update-launch-error.txt").write_text(str(error),encoding="utf-8")
+    updater.close()
     instance.close()
     sys.exit(code)

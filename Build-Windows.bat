@@ -12,7 +12,7 @@ py -m pip install PySide6 pyinstaller
 if errorlevel 1 goto :fail
 py tools\build_release.py
 if errorlevel 1 goto :fail
-echo Build complete. Packages and update.json are in dist\VERSION.
+echo Build complete. The app is in dist\MinecraftRelay, with ZIPs and update.json in dist.
 pause
 exit /b 0
 :fail

@@ -1,0 +1,86 @@
+"""One-click local build -> source push -> compiled Release -> update state."""
+import json
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import urllib.request
+import hashlib
+
+from build_release import build, ROOT
+from github_release import GitHubRelease, REPO
+
+
+def git(*args):
+    result = subprocess.run(["git", *args], cwd=ROOT, text=True, capture_output=True)
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip() or "Git command failed")
+    return result.stdout.strip()
+
+
+def main():
+    remote = git("remote", "get-url", "origin")
+    if remote.rstrip("/").removesuffix(".git") not in ("https://github.com/" + REPO, "git@github.com:" + REPO):
+        raise RuntimeError("origin does not point to the program repository. Refusing to publish.")
+    if git("branch", "--show-current") != "main":
+        raise RuntimeError("Switch the program repository to main before publishing.")
+    api = GitHubRelease(ROOT)
+    stamp = json.loads((ROOT / "release-state.json").read_text(encoding="utf-8"))
+    state = stamp["state"]
+    # Every published package is immutable. A subsequent click gets a new patch version.
+    while api.exists(state) or git("ls-remote", "origin", "refs/tags/v" + state):
+        if not re.fullmatch(r"\d+\.\d+\.\d+", state):
+            raise RuntimeError("Use a numeric major.minor.patch release version.")
+        major, minor, patch = map(int, state.split("."))
+        state = f"{major}.{minor}.{patch + 1}"
+    stamp = {"state": state, "version": state}
+    (ROOT / "release-state.json").write_text(json.dumps(stamp, indent=2) + "\n", encoding="utf-8")
+    paths = ROOT / "relay/paths.py"
+    paths.write_text(re.sub(r'^VERSION="[^"]+"', f'VERSION="{state}"', paths.read_text(encoding="utf-8"), flags=re.M), encoding="utf-8")
+    print("Building", state, flush=True)
+    build(state)
+    # Explicit list: never stage worlds, credentials, settings, build output, or backups.
+    for name in (".gitignore", "MinecraftRelay.py", "relay", "tools", "apply-update.ps1",
+                 "Build-Windows.bat", "Publish-Git.bat", "Run-Source.bat", "Run-Source.vbs",
+                 "README.md", "release-state.json"):
+        git("add", "--", name)
+    for deleted in git("diff", "--name-only", "--diff-filter=D").splitlines():
+        if deleted == "README.txt" or deleted.startswith(".github/"):
+            git("add", "-u", "--", deleted)
+    allowed_roots = {".gitignore", "MinecraftRelay.py", "apply-update.ps1", "Build-Windows.bat",
+                     "Publish-Git.bat", "Run-Source.bat", "Run-Source.vbs", "README.md", "README.txt",
+                     "release-state.json", "update.json"}
+    for name in git("diff", "--cached", "--name-only").splitlines():
+        if name not in allowed_roots and not name.startswith(("relay/", "tools/", ".github/")):
+            raise RuntimeError("Unexpected staged file; review before publishing: " + name)
+    if git("diff", "--cached", "--name-only"):
+        git("commit", "-m", "Release " + state)
+    git("push", "origin", "main")
+    commit = git("rev-parse", "HEAD")
+    git("tag", "v" + state)
+    git("push", "origin", "v" + state)
+    print("Uploading built EXE, dependencies and source package…", flush=True)
+    url = api.publish(state, commit, ROOT / "dist")
+    manifest = json.loads((ROOT / "dist/update.json").read_text(encoding="utf-8"))
+    for asset in manifest["assets"].values():
+        digest = hashlib.sha256()
+        with urllib.request.urlopen(asset["url"], timeout=60) as response:
+            while chunk := response.read(1024 * 1024):
+                digest.update(chunk)
+        if digest.hexdigest() != asset["sha256"]:
+            raise RuntimeError("Published download verification failed; update state was not advanced.")
+    # Last operation: clients only see the version after its downloads are verified.
+    shutil.copy2(ROOT / "dist/update.json", ROOT / "update.json")
+    git("add", "--", "update.json")
+    git("commit", "-m", "Publish update state " + state)
+    git("push", "origin", "main")
+    print("Published:", url, flush=True)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as error:
+        print("Publish stopped:", error, file=sys.stderr)
+        sys.exit(1)

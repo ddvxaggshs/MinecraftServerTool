@@ -16,13 +16,11 @@ import zipfile
 
 from PySide6.QtCore import QObject, Signal
 from .paths import APP_DIR, DATA_DIR, VERSION
+from .update_policy import (REPOSITORY, MANIFEST_URL, SOURCE_ROOT_FILES, WINDOWS_ROOT_FILES,
+                            PRESERVE_DIRECTORIES, PRESERVE_FILES, protected)
 
-REPOSITORY = "ddvxaggshs/MinecraftServerTool"
-MANIFEST_URL = f"https://raw.githubusercontent.com/{REPOSITORY}/main/update.json"
 MAX_DOWNLOAD = 512 * 1024 * 1024
 MAX_EXPANDED = 2 * 1024 * 1024 * 1024
-ROOT_FILES = {"MinecraftRelay.py", "Run-Source.vbs", "Run-Source.bat", "Build-Windows.bat",
-              "README.md", "README.txt", "apply-update.ps1", "release-state.json"}
 
 
 def atomic_json(path, value):
@@ -33,7 +31,7 @@ def atomic_json(path, value):
 
 def safe_member(name, kind):
     """Only program files may be replaced; config, data and worlds are excluded."""
-    if "\\" in name or ":" in name or name.startswith("/"):
+    if protected(name) or "\\" in name or ":" in name or name.startswith("/"):
         return False
     parts = name.split("/")
     if any(p in ("", ".", "..") or p.rstrip(" .") != p for p in parts):
@@ -41,8 +39,8 @@ def safe_member(name, kind):
     if any(re.fullmatch(r"(?i)(con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\..*)?", p) for p in parts):
         return False
     if kind == "windows":
-        return name in {"MinecraftRelay.exe", "apply-update.ps1", "release-state.json", "README.md", "README.txt"} or parts[0] == "_internal" and len(parts) > 1
-    return name in ROOT_FILES or (parts[0] in {"relay", "tools"} and len(parts) > 1 and name.endswith(".py"))
+        return name in WINDOWS_ROOT_FILES or parts[0] == "_internal" and len(parts) > 1
+    return name in SOURCE_ROOT_FILES or (parts[0] in {"relay", "tools"} and len(parts) > 1 and name.endswith(".py"))
 
 
 def unpack_verified(archive, destination, kind):
@@ -110,7 +108,12 @@ class UpdateManager(QObject):
             pending = self.folder / "pending.json"
             if pending.exists():
                 plan = json.loads(pending.read_text(encoding="utf-8"))
-                if plan.get("state") != self.local_state() and plan.get("kind") == self.kind:
+                old_state=str(plan.get("state",""))
+                older=(bool(re.fullmatch(r"\d+\.\d+\.\d+",old_state)) and
+                       tuple(map(int,old_state.split("."))) < tuple(map(int,VERSION.split("."))))
+                if older or Path(plan.get("app_dir",".")).resolve()!=self.app_dir:
+                    pending.replace(self.folder/"superseded-pending.json")
+                elif plan.get("state") != self.local_state() and plan.get("kind") == self.kind:
                     self.ready = True
                     self.status.emit("Update downloaded; will install after normal exit.")
                     return
@@ -128,6 +131,12 @@ class UpdateManager(QObject):
             if state == self.local_state():
                 self.status.emit("Application is up to date.")
                 return
+            # A developer/local build may be newer than the last published release.
+            # Do not automatically roll it back while its publication is in progress.
+            if re.fullmatch(r"\d+\.\d+\.\d+",str(manifest.get("version",""))) and re.fullmatch(r"\d+\.\d+\.\d+",VERSION):
+                if tuple(map(int,manifest["version"].split("."))) < tuple(map(int,VERSION.split("."))):
+                    self.status.emit("Current application is newer than the published release.")
+                    return
             asset = manifest.get("assets", {}).get(self.kind)
             if not asset:
                 self.status.emit("A new version is listed; its package has not been published yet.")
@@ -159,7 +168,9 @@ class UpdateManager(QObject):
                 if stamp.get("state") != state:
                     raise ValueError("Package state does not match the manifest")
                 atomic_json(pending, {"schema": 1, "state": state, "kind": self.kind,
-                                     "app_dir": str(self.app_dir), "stage": str(stage), "files": files})
+                                     "app_dir": str(self.app_dir), "stage": str(stage), "files": files,
+                                     "preserve_directories": sorted(PRESERVE_DIRECTORIES),
+                                     "preserve_files": sorted(PRESERVE_FILES)})
             finally:
                 download.unlink(missing_ok=True)
             self.ready = True

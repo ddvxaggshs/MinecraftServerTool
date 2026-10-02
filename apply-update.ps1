@@ -46,6 +46,8 @@ try {
     $seen = @{}
     foreach ($entry in $plan.files) {
         $name = [string]$entry.path
+        # Additional exclusions are supplied by relay/update_policy.py.
+        if ($name.Split('/')[0].ToLowerInvariant() -in $plan.preserve_directories -or $name.ToLowerInvariant() -in $plan.preserve_files) { throw "Protected path in update: $name" }
         if ($name -match '[\\:]|^/|(^|/)\.\.?(/|$)|(^|/)([^/]*[ .])(/|$)' -or $seen.ContainsKey($name.ToLowerInvariant())) { throw "Invalid update path: $name" }
         $seen[$name.ToLowerInvariant()] = $true
         $allowed = if ($plan.kind -eq 'windows') {
