@@ -7,10 +7,15 @@ if errorlevel 1 goto :fail
 py -m pip install -r requirements.txt
 if errorlevel 1 goto :fail
 py tools\publish.py
+if "%errorlevel%"=="2" goto :cancel
 if errorlevel 1 goto :fail
 echo Published successfully. Friends can now check for updates.
 pause
 exit /b 0
+:cancel
+echo Publish cancelled.
+pause
+exit /b 2
 :fail
 echo Publish failed. See the error above. No force-push is performed.
 pause

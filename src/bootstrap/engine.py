@@ -202,4 +202,20 @@ class Installer:
             raise
         self.journal.unlink()
         write_json(self.folder / "last-install.json", {"ok": True, **self.current()})
+        cleanup = self.cleanup_legacy()
         self.report("Update installed. Starting Minecraft Manager...")
+        return cleanup
+
+    def cleanup_legacy(self):
+        from .migration import archive_legacy
+        try:
+            return archive_legacy(self.root)
+        except Exception as error:
+            # A cleanup failure must not roll back a successfully installed app.
+            message = "Legacy cleanup deferred: " + str(error)
+            self.report(message)
+            try:
+                write_json(self.folder / "legacy-cleanup-error.json", {"error": str(error)})
+            except OSError:
+                pass
+            return message

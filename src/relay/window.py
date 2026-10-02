@@ -15,6 +15,7 @@ class Main(Lifecycle, QMainWindow):
     logS=Signal(str)
     infoS=Signal(object)
     stateS=Signal(str,str)
+    serverExitS=Signal(object,object,bool)
 
     def __init__(self):
         super().__init__()
@@ -32,6 +33,12 @@ class Main(Lifecycle, QMainWindow):
         self._closing_after_sync=False
         self.console_queue=queue.Queue()
         self.server_ready_event=threading.Event()
+        self.remote_status_known=False
+        self.remote_lock=None
+        self.world_behind=0
+        self.world_ahead=0
+        self._expected_stop_proc=None
+        self._last_server_exit=None
 
         same_recovery=bool(self.recovery and self.recovery.get("server_dir")==self.cfg.get("server_dir"))
         if same_recovery:
@@ -46,12 +53,17 @@ class Main(Lifecycle, QMainWindow):
         self.logS.connect(self.log)
         self.infoS.connect(self.apply_info)
         self.stateS.connect(self.set_state)
+        self.serverExitS.connect(self.server_exited)
         self.console_timer=QTimer(self)
         self.console_timer.setInterval(50)
         self.console_timer.timeout.connect(self.flush_console_queue)
         self.console_timer.start()
         self.render_state()
         self.refresh()
+        self.remote_timer=QTimer(self)
+        self.remote_timer.setInterval(10000)
+        self.remote_timer.timeout.connect(self.refresh_if_idle)
+        self.remote_timer.start()
 
     @property
     def cwd(self): return self.cfg["server_dir"]
@@ -127,6 +139,8 @@ class Main(Lifecycle, QMainWindow):
             self.log(reason)
         self.render_state()
         self.refresh()
+        if new_state==RUNNING and self._last_server_exit and self._last_server_exit[0] is self.server_proc:
+            self.server_exited(*self._last_server_exit)
         if new_state==IDLE and self._closing_after_sync:
             self._closing_after_sync=False
             QTimer.singleShot(0,self.close)
@@ -137,7 +151,10 @@ class Main(Lifecycle, QMainWindow):
         self.hb.setVisible(st==IDLE)
         self.sb.setVisible(st in (STARTING,RUNNING,STOPPING,RECOVERY_REQUIRED,RECOVERING,ERROR))
 
-        self.hb.setEnabled(st==IDLE)
+        self.hb.setEnabled(st==IDLE and self.remote_status_known and not self.remote_lock)
+        self.hb.setText("SYNC & START" if self.world_behind or self.world_ahead else "HOST SERVER")
+        self.hb.setToolTip("Another host owns the server." if self.remote_lock else
+                           "" if self.remote_status_known else "Waiting to verify the remote host lock.")
         if st==STARTING:
             self.sb.setText("◐  STARTING…"); self.sb.setEnabled(False)
         elif st==RUNNING:
@@ -190,10 +207,17 @@ class Main(Lifecycle, QMainWindow):
         d=Settings(self.cfg,self)
         if d.exec():
             self.cfg=load_config()
+            self.remote_status_known=False
+            self.remote_lock=None
+            self.render_state()
             self._refresh_generation+=1
             self.refresh()
 
-    # ---------- informational refresh: observation only ----------
+    # ---------- remote observation; checkout changes happen on Sync & Start ----------
+    def refresh_if_idle(self):
+        if self.state==IDLE and not self._refresh_running:
+            self.refresh()
+
     def refresh(self):
         if self._refresh_running:
             self._refresh_pending=True
@@ -246,9 +270,21 @@ class Main(Lifecycle, QMainWindow):
             self._refresh_pending=False
             QTimer.singleShot(0,self.refresh)
         if info.get("error"):
+            self.remote_status_known=False
+            self.render_state()
             self.log("[Relay] Status: "+info["error"])
             self.world.setText("World       ⚠ Unable to verify synchronization")
             if self.state==IDLE:self.host.setText("Host        ⚠ Remote status unavailable")
+            return
+
+        if not info.get("git_busy"):
+            self.remote_status_known=bool(info["repo_ok"])
+            self.remote_lock=info.get("sha")
+            self.world_behind=info.get("behind",0)
+            self.world_ahead=info.get("ahead",0)
+        if info.get("git_busy"):
+            self.world.setText("World       Synchronization in progress")
+            self.render_state()
             return
 
         if not info["repo_ok"]:
@@ -314,6 +350,7 @@ class Main(Lifecycle, QMainWindow):
             e.ignore(); return
 
         self.autosave_stop.set()
+        self.remote_timer.stop()
         try:self.job.close()
         except:pass
         e.accept()

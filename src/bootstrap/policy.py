@@ -2,7 +2,8 @@
 
 Only app/ is swapped. launcher.exe is installed once and never replaced.
 updater.exe is distributed independently and never replaced by the main app.
-Everything else under the installation root is preserved, including these paths.
+Known legacy program files can be archived to expired/ after a successful install.
+All other files under the installation root are preserved, including these paths.
 """
 REPOSITORY = "ddvxaggshs/MinecraftServerTool"
 CHANNEL_PATH = "channel.json"
@@ -19,3 +20,12 @@ PRESERVE_FILES = frozenset({
 MAIN_EXE = "MinecraftManager.exe"
 MAX_DOWNLOAD = 512 * 1024 * 1024
 MAX_EXPANDED = 2 * 1024 * 1024 * 1024
+
+# Exact names only. Never glob EXEs, DLLs, JSON files, or arbitrary directories.
+# A source/development checkout is excluded from automatic legacy cleanup.
+LEGACY_PROGRAM_FILES = frozenset({
+    "MinecraftRelay.exe", "MinecraftRelay.py", "MinecraftRelay.spec",
+    "apply-update.ps1", "release-state.json", "update.json",
+    "Run-Source.vbs", "Run-Source.bat", "Build-Windows.bat",
+})
+LEGACY_PROGRAM_DIRECTORIES = frozenset({"_internal", "relay"})

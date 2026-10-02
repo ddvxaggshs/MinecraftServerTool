@@ -19,6 +19,53 @@ def git(*args):
     return result.stdout.strip()
 
 
+def version_number(value):
+    if not re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", value):
+        raise ValueError("Use major.minor.patch, for example 3.9.1 (no v prefix).")
+    return tuple(map(int, value.split(".")))
+
+
+def choose_version(api, current):
+    minimum = version_number(current)
+    channel_path = ROOT / "channel.json"
+    published = None
+    if channel_path.exists():
+        published = version_number(json.loads(channel_path.read_text(encoding="utf-8"))["version"])
+
+    def used(state):
+        return bool(api.exists(state) or git("tag", "--list", "v" + state) or
+                    git("ls-remote", "origin", "refs/tags/v" + state))
+
+    suggested = current
+    while (published is not None and version_number(suggested) <= published) or used(suggested):
+        major, minor, patch = version_number(suggested)
+        suggested = f"{major}.{minor}.{patch + 1}"
+    print(f"\nCurrent source version: {current}\nSuggested release: {suggested}")
+    while True:
+        answer = input(f"Release version [{suggested}] (Enter to accept, q to cancel): ").strip()
+        if answer.lower() in {"q", "quit", "cancel"}:
+            return None
+        state = answer or suggested
+        try:
+            number = version_number(state)
+        except ValueError as error:
+            print(error)
+            continue
+        if number < minimum or (published is not None and number <= published):
+            print("Choose a version newer than the published version and not older than the source.")
+            continue
+        if used(state):
+            print("This release or tag already exists. Choose another version.")
+            continue
+        while True:
+            confirm = input(f"Build and publish v{state} to {REPO}? [y/N]: ").strip().lower()
+            if confirm in {"y", "yes"}:
+                return state
+            if confirm in {"", "n", "no", "q", "quit", "cancel"}:
+                return None
+            print("Enter y to publish or n to cancel.")
+
+
 def main():
     remote = git("remote", "get-url", "origin")
     if remote.rstrip("/").removesuffix(".git") not in ("https://github.com/" + REPO, "git@github.com:" + REPO):
@@ -27,13 +74,10 @@ def main():
         raise RuntimeError("Switch the program repository to main before publishing.")
     api = GitHubRelease(ROOT)
     stamp = json.loads((ROOT / "release-state.json").read_text(encoding="utf-8"))
-    state = stamp["state"]
-    # Every published package is immutable. A subsequent click gets a new patch version.
-    while api.exists(state) or git("ls-remote", "origin", "refs/tags/v" + state):
-        if not re.fullmatch(r"\d+\.\d+\.\d+", state):
-            raise RuntimeError("Use a numeric major.minor.patch release version.")
-        major, minor, patch = map(int, state.split("."))
-        state = f"{major}.{minor}.{patch + 1}"
+    state = choose_version(api, stamp["state"])
+    if state is None:
+        print("Publish cancelled. Version files and releases were not changed.")
+        return 2
     stamp = {"state": state, "version": state}
     (ROOT / "release-state.json").write_text(json.dumps(stamp, indent=2) + "\n", encoding="utf-8")
     paths = ROOT / "src/relay/paths.py"
@@ -78,7 +122,10 @@ def main():
 
 if __name__ == "__main__":
     try:
-        main()
+        sys.exit(main())
+    except (KeyboardInterrupt, EOFError):
+        print("\nPublish cancelled.")
+        sys.exit(2)
     except Exception as error:
         print("Publish stopped:", error, file=sys.stderr)
         sys.exit(1)

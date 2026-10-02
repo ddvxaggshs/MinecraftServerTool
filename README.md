@@ -21,6 +21,14 @@ approval before swapping directories. A forced process termination never approve
 an update. It keeps a rollback copy, replaces `app/`, restarts the GUI, and exits.
 Network/download/checksum failures leave the installed application usable.
 
+Idle clients check the remote host lock every 10 seconds. HOST is disabled while
+another host owns the lock or its status cannot be verified. Pending commits show
+SYNC & START: the application acquires the host lock, fetches again, synchronizes,
+then launches Minecraft. Runtime session locks and the player lookup cache do not
+count as world progress; genuine unpublished progress still requires Resolve World.
+Normal STOP & SYNC does not create a recovery snapshot. Delayed Java exit events are
+bound to their original process and cannot mark a subsequent session as crashed.
+
 ## Installed / Release ZIP layout
 
 ```text
@@ -40,7 +48,8 @@ MinecraftManager/
   playit/                  # optional portable playit.exe; installed Playit also works
 ```
 
-Only `app/` is replaced. Everything outside it is preserved. Exact update boundaries
+Only `app/` is replaced during normal updates. After a successful legacy migration,
+known old program files are moved to `expired/legacy-...`; other files are preserved. Exact update boundaries
 and protected names are documented in `src/bootstrap/policy.py`. The main program
 never overwrites launcher.exe or updater.exe. To update the bootstrap itself, close
 the application and replace updater.exe with the separately published new file.
@@ -50,8 +59,14 @@ the application and replace updater.exe with the separately published new file.
 Close the old application normally, copy the new `updater.exe` beside its `data/`
 folder, then run it once. Existing root data/config.json and external server paths
 are retained. Launch `launcher.exe` afterwards; the old MinecraftRelay.exe is no
-longer the entry point. Keep old files until migration succeeds, then move old
-MinecraftRelay.exe and _internal into expired/. Resolve pending recovery sessions
+longer the entry point. After installation succeeds, the updater automatically archives known old files
+(such as MinecraftRelay.exe, _internal, relay and the old update script) into
+expired/legacy-... . It never sweeps unknown EXEs/DLLs or user files. Root config.json,
+data/, worlds, backups and Playit remain in place. Files in use, directories containing
+user data, and configured server/Playit paths are retained. Cleanup problems are
+recorded in data/updates/legacy-cleanup.json or legacy-cleanup-error.json; they do not
+undo the installation. Re-run updater.exe manually to retry leftover cleanup even
+when the application is already current. Development checkouts are never cleaned. Resolve pending recovery sessions
 with the old app before migrating. Do not mix app/_internal with the old root runtime.
 
 The old `update.json` remains on 3.8.2 for compatibility; it deliberately does not
@@ -67,6 +82,7 @@ src/
   updater_main.py          # standalone installer/updater entry and progress UI
   bootstrap/
     engine.py              # download, verification, staged install and rollback
+    migration.py           # archive old program files after successful installation
     platform.py            # Windows process handles and installation mutexes
     policy.py              # repository, protocol paths and preservation rules
   relay/
@@ -100,7 +116,10 @@ Double-click `build.bat` to generate:
 
 Double-click `Publish-Git.bat` to build, commit/push the allowlisted source, publish
 a draft Release with all five assets, verify public downloads, then commit the new
-channel state. Previously used release versions automatically increment the patch.
+channel state. Before changing version files or building, the publisher suggests an
+unused patch version. Press Enter to select it or type another major.minor.patch
+version, then explicitly type `y` to confirm publication. Existing tags/releases and
+older versions are rejected. Enter `q`, decline confirmation, or press Ctrl+C to cancel.
 GitHub credentials are read from Git Credential Manager only into memory. No worlds,
 local settings, credentials, build/, dist/, or expired/ are committed. Binary packages
 live in GitHub Releases rather than source history.

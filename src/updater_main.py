@@ -34,6 +34,9 @@ def run(args, report):
                     status("Application is up to date.", done=True)
                     if not parent:
                         with Mutex(root):
+                            cleanup = installer.cleanup_legacy()
+                            if cleanup:
+                                status("Application is up to date. " + cleanup, done=True)
                             spawn([str(installer.app / MAIN_EXE)], root)
                     return
                 stage = installer.prepare(manifest)
@@ -50,8 +53,8 @@ def run(args, report):
                         raise RuntimeError("Invalid update handoff")
                 # A second main instance cannot start during the rename transaction.
                 with Mutex(root, timeout=5000):
-                    installer.install(stage)
-                    status("Update installed. Restarting application...", done=True)
+                    cleanup = installer.install(stage)
+                    status("Update installed. " + (cleanup + " " if cleanup else "") + "Restarting application...", done=True)
                     spawn([str(installer.app / MAIN_EXE)], root)
             except Exception as error:
                 status("Update failed: " + str(error), done=True)

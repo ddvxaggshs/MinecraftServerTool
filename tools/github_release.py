@@ -1,6 +1,7 @@
 """GitHub Releases transport. Credentials stay in memory, never in output/files."""
 import hashlib
 import json
+from pathlib import Path
 import subprocess
 import urllib.error
 import urllib.parse
@@ -41,10 +42,12 @@ class GitHubRelease:
         return self.request("GET", API + "/releases/tags/v" + state, missing_ok=True) is not None
 
     def publish(self, state, commit, folder):
+        notes = Path(folder).parent / "resources" / "releases" / (state + ".md")
+        body = notes.read_text(encoding="utf-8") if notes.exists() else "Download updater.exe into an empty folder and run it to install. Full ZIP layout: launcher.exe, updater.exe, app/, data/, playit/. Existing 3.8.x users must run the standalone updater once to migrate; their data is preserved."
         release = self.request("POST", API + "/releases", {
             "tag_name": "v" + state, "target_commitish": commit,
             "name": "Minecraft Relay " + state, "draft": True,
-            "body": "Download updater.exe into an empty folder and run it to install. Full ZIP layout: launcher.exe, updater.exe, app/, data/, playit/. Existing 3.8.x users must run the standalone updater once to migrate; their data is preserved.",
+            "body": body,
         })
         upload = release["upload_url"].split("{")[0]
         for name in ("updater.exe", "launcher.exe", "MinecraftManager-app.zip", "MinecraftManager-windows.zip", "MinecraftManager-source.zip"):

@@ -89,13 +89,22 @@ class Lifecycle:
     def acquire(self):
         with self.git_mutex:
             g=self.world_git()
-            relation=g.relation()
-            if relation["dirty"]:raise RuntimeError("Local changes exist. Use Resolve World or recover the previous session.")
-            if relation["ahead"]:raise RuntimeError("Local world has unpublished/diverged commits. Use Resolve World to choose which version to keep.")
+            g.check_branch()
+            if g.meaningful_changes():
+                raise RuntimeError("Local progress/settings changed: " + ", ".join(g.meaningful_changes()[:5]) + ". Use Resolve World or recover the previous session.")
             self.claim_lock(g)
-            # Re-fetch after acquiring the lock so the last host's final push cannot be missed.
-            remote=g.fetch()
-            g.command("merge","--ff-only",remote)
+            try:
+                # The final world commit and lock release are atomic. Fetch after
+                # claiming so a status observation can never miss that final save.
+                remote=g.fetch()
+                if g.sync_checkout(remote):
+                    self.logS.emit("[Git] Latest world synchronized. Starting server...")
+            except Exception:
+                # Java has not started; leave genuine local progress untouched and
+                # release only our own newly acquired lock, not a recovery session.
+                g.delete_owned_lock(self.lock_sha)
+                self.clear_session()
+                raise
 
     def release(self):
         with self.git_mutex:
@@ -104,8 +113,10 @@ class Lifecycle:
             self.clear_session()
 
     def host_server(self):
-        if self.state!=IDLE:
+        if self.state!=IDLE or not self.remote_status_known or self.remote_lock:
             return
+        self._last_server_exit=None
+        self._expected_stop_proc=None
         self.set_state(STARTING)
         threading.Thread(target=self._host_transaction,daemon=True).start()
 
@@ -134,7 +145,7 @@ class Lifecycle:
 
             self.server_ready_event.clear()
             self.autosave_stop.clear()
-            threading.Thread(target=self.reader,daemon=True).start()
+            threading.Thread(target=self.reader,args=(self.server_proc,),daemon=True).start()
 
             # RUNNING means Minecraft itself is ready, not merely that java.exe exists.
             deadline=time.monotonic()+120
@@ -178,39 +189,57 @@ class Lifecycle:
     def stop_server_process(self):
         proc=self.server_proc
         if proc is None or proc.poll() is not None:
-            return
+            return proc is None or proc.returncode==0
+        self._expected_stop_proc=proc
+        graceful=True
         self.logS.emit("[Minecraft] Saving and stopping…")
         try:
             proc.stdin.write("save-all flush\nstop\n")
             proc.stdin.flush()
             proc.wait(120)
         except Exception as e:
+            graceful=False
             self.logS.emit("[Relay] Graceful stop failed; terminating Java: "+str(e))
             if proc.poll() is None:
                 proc.kill()
             proc.wait(15)
         if proc.poll() is None:
             raise RuntimeError("Java is still running. Refusing to synchronize or release the lock.")
+        return graceful and proc.returncode==0
 
 
-    def reader(self):
-        proc=self.server_proc
+    def reader(self,proc):
+        graceful=False
+        code=None
         try:
             for raw in proc.stdout:
                 line=raw.rstrip("\r\n")
                 self.console_queue.put(line)
+                if "[Server thread/INFO]: Stopping server" in line:
+                    graceful=True
                 # Vanilla/Fabric ready line: "Done (x.xxxs)! For help, type "help""
                 if "Done (" in line and 'For help, type "help"' in line:
                     self.server_ready_event.set()
-            code=proc.poll()
+            code=proc.wait()
             self.console_queue.put(f"[Minecraft] Server exited ({code}).")
         finally:
-            # During STARTING, the host transaction notices the dead process itself.
-            # During a healthy RUNNING session, an unexpected death requires recovery.
-            if self.state==RUNNING:
-                self.stateS.emit(RECOVERY_REQUIRED,"[Relay] ⚠ Minecraft stopped unexpectedly. Recover & Sync is required.")
-            elif self.state not in (STARTING,STOPPING,RECOVERING):
-                self.refresh()
+            # Only the GUI thread decides whether this exit is expected. Carry the
+            # process identity so delayed notifications cannot corrupt a new session.
+            self.serverExitS.emit(proc,code,graceful)
+
+    def server_exited(self,proc,code,graceful):
+        if proc is not self.server_proc:
+            return
+        self._last_server_exit=(proc,code,graceful)
+        if proc is self._expected_stop_proc or self.state in (STOPPING,RECOVERING,STARTING):
+            return
+        if self.state==RUNNING:
+            self.autosave_stop.set()
+            if code==0 and graceful:
+                self.log("[Minecraft] Normal server shutdown detected; synchronizing automatically.")
+                self.stop_sync()
+            else:
+                self.set_state(RECOVERY_REQUIRED,"[Relay] Minecraft stopped unexpectedly. Recover & Sync is required.")
 
 
     def autosave_loop(self):
@@ -250,6 +279,10 @@ class Lifecycle:
         try:
             if cmd.startswith("/"):cmd=cmd[1:]
             self.logS.emit("> "+cmd)
+            if cmd.lower()=="stop":
+                self.cmd.clear()
+                self.stop_sync()
+                return
             proc.stdin.write(cmd+"\n"); proc.stdin.flush()
             self.cmd.clear()
         except Exception as e:
@@ -258,9 +291,11 @@ class Lifecycle:
 
     def stop_sync(self):
         if self.state==RUNNING:
+            self._expected_stop_proc=self.server_proc
             self.set_state(STOPPING)
             threading.Thread(target=self._stop_transaction,args=(False,),daemon=True).start()
         elif self.state in (RECOVERY_REQUIRED,ERROR):
+            self._expected_stop_proc=self.server_proc
             self.set_state(RECOVERING)
             threading.Thread(target=self._stop_transaction,args=(True,),daemon=True).start()
 
@@ -270,13 +305,13 @@ class Lifecycle:
             self.autosave_stop.set()
 
             # Recovery must also stop a process left alive by an earlier failed cleanup.
-            self.stop_server_process()
+            graceful=self.stop_server_process()
 
             # Check ownership BEFORE backups, commits or any world upload.
             with self.git_mutex:
                 self.world_git().require_owner(self.lock_sha or (self.recovery or {}).get("lock_sha"))
 
-            if is_recovery:
+            if is_recovery or not graceful:
                 # Never ZIP a normal stop; only interrupted sessions get the extra snapshot.
                 self.make_recovery_backup()
 
@@ -290,10 +325,8 @@ class Lifecycle:
             with self.git_mutex:
                 self.world_git().check_branch()
                 self.world_git().require_owner(self.lock_sha or (self.recovery or {}).get("lock_sha"))
-                run(["git","rm","--cached","--ignore-unmatch","world/session.lock"],self.cwd,30)
                 self.logS.emit("[Git] Saving session…")
-                add=run(["git","add","-A"],self.cwd,60)
-                if add.returncode: raise RuntimeError(add.stderr or add.stdout)
+                self.world_git().stage_session()
                 if run(["git","diff","--cached","--quiet"],self.cwd,30).returncode:
                     c=run(["git","commit","-m",f"Relay world save - {self.cfg['host_name']}"],self.cwd,60)
                     if c.returncode: raise RuntimeError(c.stderr or c.stdout)
@@ -302,10 +335,19 @@ class Lifecycle:
             self.logS.emit("[Relay] ✓ World synchronized.")
 
             if self.playit_proc and self.playit_proc.poll() is None:
-                self.playit_proc.terminate()
-                try:self.playit_proc.wait(8)
-                except:self.playit_proc.kill()
-            self.server_proc=None; self.playit_proc=None
+                try:
+                    self.playit_proc.terminate()
+                    try:self.playit_proc.wait(8)
+                    except subprocess.TimeoutExpired:
+                        self.playit_proc.kill()
+                        self.playit_proc.wait(8)
+                except Exception as error:
+                    # World publication already succeeded and its lock is gone.
+                    # A tunnel cleanup error is not an unsynchronized world/crash.
+                    self.logS.emit("[Playit] World is saved; tunnel cleanup warning: " + str(error))
+            self.server_proc=None
+            if self.playit_proc is None or self.playit_proc.poll() is not None:
+                self.playit_proc=None
             self.stateS.emit(IDLE,"")
         except Exception as e:
             self.logS.emit("[Relay] SYNC ERROR: "+str(e))
