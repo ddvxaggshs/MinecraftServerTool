@@ -1,6 +1,15 @@
 {
   "schema": 1,
-  "state": "3.8.0",
-  "version": "3.8.0",
-  "assets": {}
+  "state": "3.8.1",
+  "version": "3.8.1",
+  "assets": {
+    "source": {
+      "url": "https://github.com/ddvxaggshs/MinecraftServerTool/releases/download/v3.8.1/MinecraftRelay-source.zip",
+      "sha256": "a883a9dc6a4fe369839cf79f1081a22c68b4405fd446fbe1a967373186791003"
+    },
+    "windows": {
+      "url": "https://github.com/ddvxaggshs/MinecraftServerTool/releases/download/v3.8.1/MinecraftRelay-windows.zip",
+      "sha256": "906a7ed09926b2eb7ca92a7a7532be316f0914511fb9f8176b3d9d467f699f12"
+    }
+  }
 }
