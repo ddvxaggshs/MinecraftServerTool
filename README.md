@@ -29,6 +29,26 @@ count as world progress; genuine unpublished progress still requires Resolve Wor
 Normal STOP & SYNC does not create a recovery snapshot. Delayed Java exit events are
 bound to their original process and cannot mark a subsequent session as crashed.
 
+## Manual backups and live statistics
+
+Click **MANUAL BACKUP** to save a ZIP in `data/manual-backups/`. This is a local
+snapshot, not a Git upload. It includes the configured world and its dimensions,
+including separate `_nether` / `_the_end` folders, and excludes `session.lock`.
+While hosting, Relay waits for `save-off` and `save-all flush` acknowledgements
+before copying, then restores `save-on` even if the backup fails. Conflicting
+actions and application exit are disabled until backup finishes. If a mod changes
+world files during copying, the incomplete archive is discarded; retry offline.
+Keep the resulting ZIP somewhere safe before restoring it with the server stopped.
+
+The upper-right panel shows local Java working-set RAM (every 2 seconds) and online
+players (approximately every 5 seconds). RAM includes heap and native memory; it
+is not the configured maximum heap. Carpet servers with Scarpet commands enabled
+also show real players and fake/shadow players, using Carpet's `player_type` query.
+Without a compatible query, Relay displays total players and marks bot count as
+unknown. Statistics are unavailable when another computer is hosting.
+
+Carpet query reference: [Entities API](https://github.com/gnembon/fabric-carpet/blob/master/docs/scarpet/api/Entities.md).
+
 ## Installed / Release ZIP layout
 
 ```text
@@ -44,6 +64,7 @@ MinecraftManager/
     config.json            # created by setup, not shipped with personal settings
     server/                # new installations' default; existing paths retained
     logs/
+    manual-backups/         # local ZIP snapshots made with MANUAL BACKUP
     updates/               # staged files, status, transaction journal and rollback
   playit/                  # optional portable playit.exe; installed Playit also works
 ```
@@ -89,6 +110,10 @@ src/
     app.py, window.py       # startup / main UI
     setup.py, settings.py  # setup / settings dialogs
     lifecycle.py           # Java / Playit process lifecycle and recovery
+    live_tools.py          # backup controls and live statistics integration
+    backup.py              # acknowledged online saves and local world snapshots
+    monitor.py             # player / Carpet counts and Java working-set RAM
+    server_io.py           # process-bound console commands and acknowledgements
     world_git.py           # world Git transactions and host lock
     config.py, paths.py     # data locations and configuration
     processes.py           # subprocess and dependency helpers

@@ -37,7 +37,7 @@ QSlider::handle:horizontal:hover { background:#fff; }""");app.setFont(QFont("Seg
         m.update_status.setText(updater.last_message)
     # Download in the background; never interrupt hosting or an unsynced session.
     def apply_when_idle():
-        if updater.ready and m.state==IDLE and not m.recovery and not app.activeModalWidget():
+        if updater.ready and m.state==IDLE and not m.recovery and not m._backup_busy and not app.activeModalWidget():
             m.close()
     update_exit_timer=QTimer(m)
     update_exit_timer.setInterval(1000)

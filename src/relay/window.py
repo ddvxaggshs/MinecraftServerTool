@@ -10,12 +10,16 @@ from .processes import WindowsJob, run, find_playit
 from .settings import Settings
 from .lifecycle import Lifecycle
 from .world_git import WorldGit
+from .live_tools import LiveTools
 
-class Main(Lifecycle, QMainWindow):
+class Main(LiveTools, Lifecycle, QMainWindow):
     logS=Signal(str)
     infoS=Signal(object)
     stateS=Signal(str,str)
     serverExitS=Signal(object,object,bool)
+    playerStatsS=Signal(object,object)
+    backupProgressS=Signal(int)
+    backupDoneS=Signal(object)
 
     def __init__(self):
         super().__init__()
@@ -39,6 +43,7 @@ class Main(Lifecycle, QMainWindow):
         self.world_ahead=0
         self._expected_stop_proc=None
         self._last_server_exit=None
+        self.init_live_tools()
 
         same_recovery=bool(self.recovery and self.recovery.get("server_dir")==self.cfg.get("server_dir"))
         if same_recovery:
@@ -54,6 +59,9 @@ class Main(Lifecycle, QMainWindow):
         self.infoS.connect(self.apply_info)
         self.stateS.connect(self.set_state)
         self.serverExitS.connect(self.server_exited)
+        self.playerStatsS.connect(self.player_stats_received)
+        self.backupDoneS.connect(self.backup_finished)
+        self.backupProgressS.connect(lambda percent: self.backup_button.setText(f"BACKUP {percent}%"))
         self.console_timer=QTimer(self)
         self.console_timer.setInterval(50)
         self.console_timer.timeout.connect(self.flush_console_queue)
@@ -64,6 +72,11 @@ class Main(Lifecycle, QMainWindow):
         self.remote_timer.setInterval(10000)
         self.remote_timer.timeout.connect(self.refresh_if_idle)
         self.remote_timer.start()
+        self.metrics_timer=QTimer(self)
+        self.metrics_timer.setInterval(1000)
+        self.metrics_timer.timeout.connect(self.poll_metrics)
+        self.metrics_timer.start()
+        self.poll_metrics()
 
     @property
     def cwd(self): return self.cfg["server_dir"]
@@ -76,7 +89,17 @@ class Main(Lifecycle, QMainWindow):
     def ui(self):
         w=QWidget(); self.setCentralWidget(w)
         o=QVBoxLayout(w); o.setContentsMargins(28,24,28,24); o.setSpacing(14)
-        title=QLabel(f"Minecraft Relay  V{VERSION}"); title.setObjectName("title"); o.addWidget(title)
+        heading=QHBoxLayout()
+        title=QLabel(f"Minecraft Relay  V{VERSION}"); title.setObjectName("title"); heading.addWidget(title,1)
+        metrics=QFrame(); metrics.setObjectName("metrics"); metrics.setMinimumWidth(245)
+        metric_layout=QVBoxLayout(metrics); metric_layout.setContentsMargins(16,10,16,10)
+        self.online_label=QLabel("Online: --")
+        self.bots_label=QLabel("Server offline")
+        self.memory_label=QLabel("Java RAM: --")
+        self.memory_label.setToolTip("Physical working-set memory of this Java process, including heap and native memory; refreshed every 2 seconds.")
+        self.bots_label.setToolTip("Local host only. Carpet fake and shadow players are counted separately when Scarpet is available; otherwise unknown.")
+        for label in (self.online_label,self.bots_label,self.memory_label):metric_layout.addWidget(label)
+        heading.addWidget(metrics); o.addLayout(heading)
         self.update_status=QLabel("Application updates will be checked in the background.")
         self.update_status.setWordWrap(True)
         o.addWidget(self.update_status)
@@ -92,7 +115,10 @@ class Main(Lifecycle, QMainWindow):
         self.rf=QPushButton("Refresh"); self.rf.clicked.connect(self.refresh)
         self.resolve_button=QPushButton("Resolve World"); self.resolve_button.clicked.connect(self.resolve_world)
         st=QPushButton("⚙ Settings"); st.clicked.connect(self.settings)
-        for b in [self.hb,self.sb,self.rf,self.resolve_button,st]: r.addWidget(b)
+        self.settings_button=st
+        self.backup_button=QPushButton("MANUAL BACKUP"); self.backup_button.clicked.connect(self.manual_backup)
+        self.backup_button.setToolTip("Back up this computer's world to data/manual-backups. Online backups flush world saves first.")
+        for b in [self.hb,self.sb,self.rf,self.backup_button,self.resolve_button,st]: r.addWidget(b)
         r.addStretch(); o.addLayout(r)
 
         o.addWidget(QLabel("Server Console"))
@@ -107,6 +133,8 @@ class Main(Lifecycle, QMainWindow):
 
         self.setStyleSheet("""QMainWindow,QWidget{background:#f5f6f8;color:#202124;font-family:"Segoe UI";font-size:14px} QLabel#title{font-size:30px;font-weight:700}
         QFrame#card{background:white;border:1px solid #dfe3e8;border-radius:10px;padding:14px}
+        QFrame#metrics{background:white;border:1px solid #dfe3e8;border-radius:10px}
+        QFrame#metrics QLabel{background:transparent;font-size:13px}
         QPushButton{background:#ffffff;border:1px solid #c9ced6;border-radius:7px;padding:8px 14px}
         QPushButton:hover:enabled{background:#e8ebef;border-color:#9ca3ad}
         QPushButton:pressed:enabled{background:#cfd4da;border-color:#737b86;padding-top:10px;padding-bottom:6px}
@@ -181,8 +209,10 @@ class Main(Lifecycle, QMainWindow):
         elif st==STOPPING: self.srv.setText("Server      ◐ Stopping")
         elif st in (RECOVERY_REQUIRED,RECOVERING): self.srv.setText("Server      ⚠ Recovery required")
         else: self.srv.setText("Server      ○ Offline")
+        self.render_tools()
 
     def resolve_world(self):
+        if self._backup_busy:return
         if self.state not in (IDLE,RECOVERY_REQUIRED):return
         if self.server_proc and self.server_proc.poll() is None:return
         box=QMessageBox(self)
@@ -201,6 +231,7 @@ class Main(Lifecycle, QMainWindow):
         threading.Thread(target=self._resolve_transaction,args=(choice,),daemon=True).start()
 
     def settings(self):
+        if self._backup_busy:return
         if self.state not in (IDLE,RECOVERY_REQUIRED):
             QMessageBox.warning(self,"Server active","Settings cannot be changed while hosting or synchronizing.")
             return
@@ -326,6 +357,9 @@ class Main(Lifecycle, QMainWindow):
 
 
     def closeEvent(self,e):
+        if self._backup_busy:
+            QMessageBox.information(self,"Backup in progress","Wait for the backup and save-on confirmation before closing.")
+            e.ignore(); return
         if self.state in (STARTING,STOPPING,RECOVERING):
             QMessageBox.warning(self,"Operation in progress","Wait for the current operation to finish before closing.")
             e.ignore(); return
@@ -351,6 +385,7 @@ class Main(Lifecycle, QMainWindow):
 
         self.autosave_stop.set()
         self.remote_timer.stop()
+        self.metrics_timer.stop()
         try:self.job.close()
         except:pass
         e.accept()

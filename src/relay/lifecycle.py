@@ -5,6 +5,7 @@ from .paths import VERSION, LOCK_REF, REMOTE_LOCK_REF, BACKUP_DIR, IDLE, STARTIN
 from .config import save_recovery, clear_recovery
 from .processes import run, java21, find_playit
 from .world_git import WorldGit
+from .server_io import ConsoleSession
 
 class Lifecycle:
     def _resolve_transaction(self,choice):
@@ -113,10 +114,11 @@ class Lifecycle:
             self.clear_session()
 
     def host_server(self):
-        if self.state!=IDLE or not self.remote_status_known or self.remote_lock:
+        if getattr(self,"_backup_busy",False) or self.state!=IDLE or not self.remote_status_known or self.remote_lock:
             return
         self._last_server_exit=None
         self._expected_stop_proc=None
+        self._resume_saving_required=False
         self.set_state(STARTING)
         threading.Thread(target=self._host_transaction,daemon=True).start()
 
@@ -142,10 +144,11 @@ class Lifecycle:
                                                stderr=subprocess.STDOUT,text=True,encoding="utf-8",errors="replace",
                                                creationflags=subprocess.CREATE_NO_WINDOW)
             self.job.assign(self.server_proc)
+            self.console_session=ConsoleSession(self.server_proc)
 
             self.server_ready_event.clear()
             self.autosave_stop.clear()
-            threading.Thread(target=self.reader,args=(self.server_proc,),daemon=True).start()
+            threading.Thread(target=self.reader,args=(self.server_proc,self.console_session),daemon=True).start()
 
             # RUNNING means Minecraft itself is ready, not merely that java.exe exists.
             deadline=time.monotonic()+120
@@ -194,8 +197,7 @@ class Lifecycle:
         graceful=True
         self.logS.emit("[Minecraft] Saving and stopping…")
         try:
-            proc.stdin.write("save-all flush\nstop\n")
-            proc.stdin.flush()
+            self.write_server_command(proc,"save-all flush\nstop")
             proc.wait(120)
         except Exception as e:
             graceful=False
@@ -208,13 +210,22 @@ class Lifecycle:
         return graceful and proc.returncode==0
 
 
-    def reader(self,proc):
+    def write_server_command(self,proc,command):
+        session=getattr(self,"console_session",None)
+        if session is not None and session.proc is proc:
+            session.send(command)
+        else:
+            proc.stdin.write(command.rstrip("\n")+"\n")
+            proc.stdin.flush()
+
+    def reader(self,proc,session=None):
         graceful=False
         code=None
         try:
             for raw in proc.stdout:
                 line=raw.rstrip("\r\n")
-                self.console_queue.put(line)
+                if session is None or not session.feed(line):
+                    self.console_queue.put(line)
                 if "[Server thread/INFO]: Stopping server" in line:
                     graceful=True
                 # Vanilla/Fabric ready line: "Done (x.xxxs)! For help, type "help""
@@ -223,6 +234,7 @@ class Lifecycle:
             code=proc.wait()
             self.console_queue.put(f"[Minecraft] Server exited ({code}).")
         finally:
+            if session is not None:session.close()
             # Only the GUI thread decides whether this exit is expected. Carry the
             # process identity so delayed notifications cannot corrupt a new session.
             self.serverExitS.emit(proc,code,graceful)
@@ -245,8 +257,8 @@ class Lifecycle:
     def autosave_loop(self):
         while not self.autosave_stop.wait(300):
             try:
-                if self.state==RUNNING and self.server_proc and self.server_proc.poll() is None:
-                    self.server_proc.stdin.write("save-all flush\n"); self.server_proc.stdin.flush()
+                if self.state==RUNNING and not getattr(self,"_backup_busy",False) and self.server_proc and self.server_proc.poll() is None:
+                    self.write_server_command(self.server_proc,"save-all flush")
                     self.logS.emit("[Safety] Periodic save-all flush completed.")
             except Exception:
                 return
@@ -268,7 +280,7 @@ class Lifecycle:
 
 
     def send(self):
-        if self.state!=RUNNING:
+        if self.state!=RUNNING or getattr(self,"_backup_busy",False):
             return
         cmd=self.cmd.text().strip()
         if not cmd:return
@@ -283,13 +295,16 @@ class Lifecycle:
                 self.cmd.clear()
                 self.stop_sync()
                 return
-            proc.stdin.write(cmd+"\n"); proc.stdin.flush()
+            self.write_server_command(proc,cmd)
             self.cmd.clear()
         except Exception as e:
             self.logS.emit("[Relay] ERROR sending server command: "+str(e))
 
 
     def stop_sync(self):
+        if getattr(self,"_backup_busy",False):
+            self._stop_after_backup=True
+            return
         if self.state==RUNNING:
             self._expected_stop_proc=self.server_proc
             self.set_state(STOPPING)
