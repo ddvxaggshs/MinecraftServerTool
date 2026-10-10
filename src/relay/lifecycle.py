@@ -114,7 +114,7 @@ class Lifecycle:
             self.clear_session()
 
     def host_server(self):
-        if getattr(self,"_backup_busy",False) or self.state!=IDLE or not self.remote_status_known or self.remote_lock:
+        if getattr(self,"_backup_busy",False) or getattr(self,"_mods_busy",False) or getattr(self,"_mods_pending",False) or self.state!=IDLE or not self.remote_status_known or self.remote_lock:
             return
         self._last_server_exit=None
         self._expected_stop_proc=None
@@ -302,6 +302,7 @@ class Lifecycle:
 
 
     def stop_sync(self):
+        if getattr(self,"_mods_busy",False) or getattr(self,"_mods_pending",False):return
         if getattr(self,"_backup_busy",False):
             self._stop_after_backup=True
             return

@@ -49,6 +49,34 @@ unknown. Statistics are unavailable when another computer is hosting.
 
 Carpet query reference: [Entities API](https://github.com/gnembon/fabric-carpet/blob/master/docs/scarpet/api/Entities.md).
 
+## Mod management
+
+Open **Mods** to see the names, versions and enabled state of JAR files directly
+inside the server's `mods/` folder. Names are read locally from `fabric.mod.json`
+(with Quilt/Forge metadata recognized for display); no account, internet lookup or
+execution of the JAR is needed. Unknown files retain their filenames.
+
+With all hosts stopped and the local branch at the published GitHub commit:
+
+- **Add JAR...** imports a local Fabric server mod, rejecting duplicate IDs and
+  client-only mods. Dependency/version compatibility is still checked by Fabric
+  when the server starts; this is not an automatic dependency installer.
+- **Disable / Enable & sync** renames `.jar` to `.jar.disabled` or back.
+- **Remove & sync** removes the selected file after retaining a local copy.
+
+Each action automatically publishes only its selected mod paths to the configured
+server Git repository. An isolated Git index prevents unrelated staged or dirty
+world/configuration files from entering the commit. Existing unpublished commits
+must be resolved first, since pushing them would also publish their world changes.
+The ordinary **STOP & SYNC** operation still saves and uploads world progress.
+
+Mod operations use the same exclusive remote host lock and atomic publication as
+hosting. A failed/interrupted operation keeps a journal and copies under
+`data/mod-transactions/`. Open **Mods > Retry sync (mods only)** to finish, or
+**Cancel pending change** to restore the original mod files. Hosting and other
+mutations remain disabled until the transaction finishes. A lost response after
+a successful push is detected on retry instead of creating a duplicate commit.
+
 ## Installed / Release ZIP layout
 
 ```text
@@ -65,6 +93,7 @@ MinecraftManager/
     server/                # new installations' default; existing paths retained
     logs/
     manual-backups/         # local ZIP snapshots made with MANUAL BACKUP
+    mod-transactions/       # pending mod operations and retained JAR copies
     updates/               # staged files, status, transaction journal and rollback
   playit/                  # optional portable playit.exe; installed Playit also works
 ```
@@ -114,6 +143,9 @@ src/
     backup.py              # acknowledged online saves and local world snapshots
     monitor.py             # player / Carpet counts and Java working-set RAM
     server_io.py           # process-bound console commands and acknowledgements
+    mod_files.py           # local JAR metadata and file validation
+    mod_ui.py              # Mods dropdown and background actions
+    mod_sync.py            # isolated mod-only commits, retry and cancellation
     world_git.py           # world Git transactions and host lock
     config.py, paths.py     # data locations and configuration
     processes.py           # subprocess and dependency helpers

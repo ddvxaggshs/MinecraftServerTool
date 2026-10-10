@@ -34,7 +34,7 @@ class LiveTools:
             self.settings_button.setEnabled(True)
 
     def manual_backup(self):
-        if self._backup_busy or self._resume_saving_required:
+        if self._backup_busy or self._resume_saving_required or self.mods_blocked():
             return
         proc = self.server_proc
         session = self.console_session

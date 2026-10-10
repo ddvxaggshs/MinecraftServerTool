@@ -2,7 +2,7 @@ import re, threading, queue
 from pathlib import Path
 from PySide6.QtCore import Signal, QTimer
 from PySide6.QtGui import QFont
-from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QPlainTextEdit, QLineEdit, QFrame, QMessageBox
+from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QPlainTextEdit, QLineEdit, QFrame, QMessageBox, QToolButton, QMenu
 
 from .paths import VERSION, LOCK_REF, REMOTE_LOCK_REF, BACKUP_DIR, IDLE, STARTING, RUNNING, STOPPING, RECOVERY_REQUIRED, RECOVERING, ERROR
 from .config import load_config, load_recovery
@@ -11,8 +11,10 @@ from .settings import Settings
 from .lifecycle import Lifecycle
 from .world_git import WorldGit
 from .live_tools import LiveTools
+from .mod_ui import ModTools
+from .mod_sync import ModSync
 
-class Main(LiveTools, Lifecycle, QMainWindow):
+class Main(ModTools, LiveTools, Lifecycle, QMainWindow):
     logS=Signal(str)
     infoS=Signal(object)
     stateS=Signal(str,str)
@@ -20,6 +22,8 @@ class Main(LiveTools, Lifecycle, QMainWindow):
     playerStatsS=Signal(object,object)
     backupProgressS=Signal(int)
     backupDoneS=Signal(object)
+    modsListedS=Signal(object)
+    modsDoneS=Signal(object)
 
     def __init__(self):
         super().__init__()
@@ -44,6 +48,7 @@ class Main(LiveTools, Lifecycle, QMainWindow):
         self._expected_stop_proc=None
         self._last_server_exit=None
         self.init_live_tools()
+        self.init_mod_tools()
 
         same_recovery=bool(self.recovery and self.recovery.get("server_dir")==self.cfg.get("server_dir"))
         if same_recovery:
@@ -61,6 +66,8 @@ class Main(LiveTools, Lifecycle, QMainWindow):
         self.serverExitS.connect(self.server_exited)
         self.playerStatsS.connect(self.player_stats_received)
         self.backupDoneS.connect(self.backup_finished)
+        self.modsListedS.connect(self.mods_listed)
+        self.modsDoneS.connect(self.mods_finished)
         self.backupProgressS.connect(lambda percent: self.backup_button.setText(f"BACKUP {percent}%"))
         self.console_timer=QTimer(self)
         self.console_timer.setInterval(50)
@@ -77,6 +84,7 @@ class Main(LiveTools, Lifecycle, QMainWindow):
         self.metrics_timer.timeout.connect(self.poll_metrics)
         self.metrics_timer.start()
         self.poll_metrics()
+        self.refresh_mods()
 
     @property
     def cwd(self): return self.cfg["server_dir"]
@@ -118,8 +126,15 @@ class Main(LiveTools, Lifecycle, QMainWindow):
         self.settings_button=st
         self.backup_button=QPushButton("MANUAL BACKUP"); self.backup_button.clicked.connect(self.manual_backup)
         self.backup_button.setToolTip("Back up this computer's world to data/manual-backups. Online backups flush world saves first.")
-        for b in [self.hb,self.sb,self.rf,self.backup_button,self.resolve_button,st]: r.addWidget(b)
+        self.mods_button=QToolButton(); self.mods_button.setText("Mods")
+        self.mods_button.setPopupMode(QToolButton.InstantPopup)
+        self.mods_menu=QMenu(self.mods_button); self.mods_button.setMenu(self.mods_menu)
+        self.mods_menu.aboutToShow.connect(self.fill_mod_menu)
+        self.mods_menu.aboutToHide.connect(self.refresh_mods)
+        self.mods_button.setToolTip("Read mod names from JAR metadata. Changes are synchronized separately from world saves.")
+        for b in [self.hb,self.sb,self.rf,self.backup_button,self.mods_button,self.resolve_button,st]: r.addWidget(b)
         r.addStretch(); o.addLayout(r)
+        self.mod_status=QLabel(); self.mod_status.setWordWrap(True); o.addWidget(self.mod_status)
 
         o.addWidget(QLabel("Server Console"))
         self.con=QPlainTextEdit(); self.con.setReadOnly(True); self.con.setFont(QFont("Consolas",10))
@@ -135,6 +150,10 @@ class Main(LiveTools, Lifecycle, QMainWindow):
         QFrame#card{background:white;border:1px solid #dfe3e8;border-radius:10px;padding:14px}
         QFrame#metrics{background:white;border:1px solid #dfe3e8;border-radius:10px}
         QFrame#metrics QLabel{background:transparent;font-size:13px}
+        QToolButton{background:white;border:1px solid #c9ced6;border-radius:7px;padding:8px 20px 8px 14px}
+        QToolButton:hover:enabled{background:#e8ebef} QToolButton:disabled{color:#9aa0a6}
+        QMenu{background:white;border:1px solid #c9ced6} QMenu::item{padding:7px 18px}
+        QMenu::item:selected{background:#e8ebef} QMenu::item:disabled{color:#9aa0a6}
         QPushButton{background:#ffffff;border:1px solid #c9ced6;border-radius:7px;padding:8px 14px}
         QPushButton:hover:enabled{background:#e8ebef;border-color:#9ca3ad}
         QPushButton:pressed:enabled{background:#cfd4da;border-color:#737b86;padding-top:10px;padding-bottom:6px}
@@ -167,6 +186,7 @@ class Main(LiveTools, Lifecycle, QMainWindow):
             self.log(reason)
         self.render_state()
         self.refresh()
+        if new_state in (IDLE,RUNNING):self.refresh_mods()
         if new_state==RUNNING and self._last_server_exit and self._last_server_exit[0] is self.server_proc:
             self.server_exited(*self._last_server_exit)
         if new_state==IDLE and self._closing_after_sync:
@@ -210,9 +230,10 @@ class Main(LiveTools, Lifecycle, QMainWindow):
         elif st in (RECOVERY_REQUIRED,RECOVERING): self.srv.setText("Server      ⚠ Recovery required")
         else: self.srv.setText("Server      ○ Offline")
         self.render_tools()
+        self.render_mod_tools()
 
     def resolve_world(self):
-        if self._backup_busy:return
+        if self._backup_busy or self.mods_blocked():return
         if self.state not in (IDLE,RECOVERY_REQUIRED):return
         if self.server_proc and self.server_proc.poll() is None:return
         box=QMessageBox(self)
@@ -231,13 +252,16 @@ class Main(LiveTools, Lifecycle, QMainWindow):
         threading.Thread(target=self._resolve_transaction,args=(choice,),daemon=True).start()
 
     def settings(self):
-        if self._backup_busy:return
+        if self._backup_busy or self.mods_blocked():return
         if self.state not in (IDLE,RECOVERY_REQUIRED):
             QMessageBox.warning(self,"Server active","Settings cannot be changed while hosting or synchronizing.")
             return
         d=Settings(self.cfg,self)
         if d.exec():
             self.cfg=load_config()
+            self._mods_pending=ModSync(self.cfg).pending
+            self._mods=[]
+            self.refresh_mods()
             self.remote_status_known=False
             self.remote_lock=None
             self.render_state()
@@ -357,6 +381,9 @@ class Main(LiveTools, Lifecycle, QMainWindow):
 
 
     def closeEvent(self,e):
+        if self._mods_busy:
+            QMessageBox.information(self,"Mod synchronization","Wait for mod synchronization to finish before closing.")
+            e.ignore(); return
         if self._backup_busy:
             QMessageBox.information(self,"Backup in progress","Wait for the backup and save-on confirmation before closing.")
             e.ignore(); return
