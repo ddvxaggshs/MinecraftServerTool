@@ -1,28 +1,28 @@
 {
   "schema": 2,
   "protocol": 1,
-  "state": "3.10.1",
-  "version": "3.10.1",
+  "state": "3.10.2",
+  "version": "3.10.2",
   "assets": {
     "app": {
-      "url": "https://github.com/ddvxaggshs/MinecraftServerTool/releases/download/v3.10.1/MinecraftManager-app.zip",
-      "sha256": "9a2e58b514b67a0f03e2f18a2c09f3f872e76f5e95ed530098d8f468a0cca7b2"
+      "url": "https://github.com/ddvxaggshs/MinecraftServerTool/releases/download/v3.10.2/MinecraftManager-app.zip",
+      "sha256": "689e9f09d30bc11d65b04df8a6a2201f5cc82925646513e7732ae203865eacf9"
     },
     "launcher": {
-      "url": "https://github.com/ddvxaggshs/MinecraftServerTool/releases/download/v3.10.1/launcher.exe",
-      "sha256": "4ce1bc5d272e406f46a294e235f8863930b835a089b2abe7fbb244716a96863b"
+      "url": "https://github.com/ddvxaggshs/MinecraftServerTool/releases/download/v3.10.2/launcher.exe",
+      "sha256": "20a072cbab23c8bdbc4f45393c90f71b44af993c535e4b57fa368a5bf1fc6aba"
     },
     "updater": {
-      "url": "https://github.com/ddvxaggshs/MinecraftServerTool/releases/download/v3.10.1/updater.exe",
-      "sha256": "9e9276c7820b4ed1757a6de778f317d9f90aa9dd30d9902d4308defec70c002d"
+      "url": "https://github.com/ddvxaggshs/MinecraftServerTool/releases/download/v3.10.2/updater.exe",
+      "sha256": "038cacb57cd9ad934d48574d5936616c3176e8306a4094785a212f79588a6a15"
     },
     "windows": {
-      "url": "https://github.com/ddvxaggshs/MinecraftServerTool/releases/download/v3.10.1/MinecraftManager-windows.zip",
-      "sha256": "8b478cc881fb98a374f0796e3aa8e2fc4cf2e38c60bf3cf94ea3cc19b769cf1a"
+      "url": "https://github.com/ddvxaggshs/MinecraftServerTool/releases/download/v3.10.2/MinecraftManager-windows.zip",
+      "sha256": "f7f0ca6d21bc38ba41fb34e8c0ca4a122db49b5e73ca292cabc3599bfe27d907"
     },
     "source": {
-      "url": "https://github.com/ddvxaggshs/MinecraftServerTool/releases/download/v3.10.1/MinecraftManager-source.zip",
-      "sha256": "7e2785d0d55fc6c27aa31e2a99d499ea8c0911562eafb6e0e975b9241853fa43"
+      "url": "https://github.com/ddvxaggshs/MinecraftServerTool/releases/download/v3.10.2/MinecraftManager-source.zip",
+      "sha256": "601f403444579edab46edabda65ed7301b332c05b13b4eb40682c79a79f7e214"
     }
   }
 }
