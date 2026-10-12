@@ -180,3 +180,21 @@ older versions are rejected. Enter `q`, decline confirmation, or press Ctrl+C to
 GitHub credentials are read from Git Credential Manager only into memory. No worlds,
 local settings, credentials, build/, dist/, or expired/ are committed. Binary packages
 live in GitHub Releases rather than source history.
+
+## Synchronization recovery (3.10.2)
+
+World upload allows up to 30 minutes and logs elapsed time every 15 seconds.
+Timed-out Git commands terminate their own child processes so a captured output
+handle cannot leave the application waiting indefinitely. An interrupted upload
+response is checked against the remote commit and host lock before reporting failure.
+The intended commit is stored in the recovery marker before uploading. On retry,
+Recover & Sync can recognize an already published session, including one followed
+by another host's commits, without uploading again or releasing that host's lock.
+Unpublished local changes and unverifiable network results still require recovery.
+
+Resolve World retains the world ZIP and a local backup branch. Its history bundle
+contains only local history not already reachable from the fetched GitHub branch,
+instead of repacking every historical world/cache. Restoring this incremental bundle
+requires the shared history from GitHub. Bundles are verified before the `.partial`
+suffix is removed. If backup fails before selecting a world version, only the
+temporary lock created by that Resolve attempt is released; local files remain.

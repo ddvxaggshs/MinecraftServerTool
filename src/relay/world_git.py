@@ -6,12 +6,16 @@ from .paths import LOCK_REF
 
 
 class WorldGit:
-    def __init__(self, directory, remote, branch):
+    def __init__(self, directory, remote, branch, progress=None):
         self.directory, self.remote, self.branch = directory, remote, branch
         self.main_ref = "refs/heads/" + branch
+        self.progress = progress
 
-    def command(self, *args, input=None, timeout=120, raw=False):
-        result = run(["git", *args], self.directory, timeout, input=input)
+    def command(self, *args, input=None, timeout=None, raw=False):
+        if timeout is None:
+            timeout = {"push": 1800, "fetch": 300, "bundle": 1800, "add": 600}.get(args[0], 120)
+        progress = (lambda elapsed: self.progress(f"[Git] {args[0]} still running ({elapsed}s elapsed)...")) if self.progress else None
+        result = run(["git", *args], self.directory, timeout, input=input, progress=progress)
         if result.returncode:
             raise RuntimeError((result.stderr or result.stdout or "Git command failed").strip())
         return result.stdout if raw else result.stdout.strip()
@@ -114,11 +118,53 @@ class WorldGit:
         if fetched != before:
             raise RuntimeError("Remote world changed during synchronization; retry after checking versions.")
         self.command("merge-base", "--is-ancestor", before, "HEAD")
-        self.command("push", "--atomic", "--force-with-lease=" + self.main_ref + ":" + before,
-                     "--force-with-lease=" + LOCK_REF + ":" + owned,
-                     self.remote, "HEAD:" + self.main_ref, ":" + LOCK_REF)
+        commit = self.command("rev-parse", "HEAD")
+        try:
+            self.command("push", "--atomic", "--force-with-lease=" + self.main_ref + ":" + before,
+                         "--force-with-lease=" + LOCK_REF + ":" + owned,
+                         self.remote, commit + ":" + self.main_ref, ":" + LOCK_REF)
+        except Exception as error:
+            # A lost response/timeout does not prove the atomic push was rejected.
+            try:
+                accepted = self.publication_confirmed(commit, owned)
+            except Exception as check_error:
+                raise RuntimeError(f"Upload result could not be verified: {error}. "
+                                   f"Remote check failed: {check_error}. Retry Recover & Sync when connected.") from error
+            if not accepted:
+                raise
+            if self.progress:
+                self.progress("[Git] Upload response was interrupted; GitHub confirmed the saved commit and lock release.")
+
+    def publication_confirmed(self, commit, owned):
+        main, lock = self.remote_refs()
+        if lock == owned:
+            return False
+        if main == commit:
+            return True
+        # Another host may already have continued from our successfully saved world.
+        self.fetch()
+        result = run(["git", "merge-base", "--is-ancestor", commit, main], self.directory, 120)
+        if result.returncode not in (0, 1):
+            raise RuntimeError(result.stderr or "Could not verify published history")
+        return result.returncode == 0
+
+    def backup_local_history(self, branch, remote, target):
+        """Preserve only history not already reachable on GitHub, never --all."""
+        if self.command("rev-list", "--count", branch, "^" + remote) == "0":
+            return None
+        target = Path(target)
+        partial = target.with_suffix(target.suffix + ".partial")
+        self.command("bundle", "create", str(partial), branch, "^" + remote)
+        self.command("bundle", "verify", str(partial))
+        partial.replace(target)
+        return target
 
     def delete_owned_lock(self, owned):
         self.require_owner(owned)
-        self.command("push", "--force-with-lease=" + LOCK_REF + ":" + owned,
-                     self.remote, ":" + LOCK_REF)
+        try:
+            self.command("push", "--force-with-lease=" + LOCK_REF + ":" + owned,
+                         self.remote, ":" + LOCK_REF)
+        except Exception:
+            _, actual = self.remote_refs()
+            if actual == owned:
+                raise

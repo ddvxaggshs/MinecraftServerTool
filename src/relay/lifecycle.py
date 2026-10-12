@@ -9,6 +9,8 @@ from .server_io import ConsoleSession
 
 class Lifecycle:
     def _resolve_transaction(self,choice):
+        new_lock=None
+        selected=False
         try:
             if choice not in ("remote","local"):
                 raise RuntimeError("Invalid version selection.")
@@ -25,7 +27,9 @@ class Lifecycle:
                 stamp=datetime.now().strftime("%Y%m%d-%H%M%S-%f")
                 if self.recovery:
                     (BACKUP_DIR/f"session-{stamp}.json").write_text(json.dumps(self.recovery,indent=2),encoding="utf-8")
-                if not lock:self.claim_lock(g)
+                if not lock:
+                    self.claim_lock(g)
+                    new_lock=self.lock_sha
                 self.make_recovery_backup()
                 g.command("rm","--cached","--ignore-unmatch","world/session.lock")
                 ignore=Path(self.cwd)/".gitignore"
@@ -38,10 +42,13 @@ class Lifecycle:
                 branch="backup/relay-"+stamp
                 g.command("branch",branch,"HEAD")
                 remote=g.fetch()
-                g.command("bundle","create",str(BACKUP_DIR/f"history-{stamp}.bundle"),"--all")
-                self.logS.emit(f"[Safety] Local version preserved in {branch} and recovery-backups.")
+                self.logS.emit("[Safety] Backing up local history not already saved on GitHub...")
+                bundle=g.backup_local_history(branch,remote,BACKUP_DIR/f"history-{stamp}.bundle")
+                self.logS.emit(f"[Safety] Local version preserved in {branch}." +
+                               (f" Incremental history backup: {bundle.name}" if bundle else " All history is already on GitHub."))
                 # Snapshot and lock are established before either version is selected.
                 g.require_owner(self.lock_sha)
+                selected=True
                 if choice=="remote":
                     g.command("reset","--hard",remote)
                 else:
@@ -51,16 +58,43 @@ class Lifecycle:
                     merge=g.command("commit-tree",g.command("rev-parse","HEAD^{tree}"),*parents,
                                     input="Resolve world versions: keep local files\n")
                     g.command("merge","--ff-only",merge)
-                g.publish_and_unlock(self.lock_sha)
+                self.publish_session(g)
                 self.clear_session()
             if self.playit_proc and self.playit_proc.poll() is None:self.playit_proc.terminate()
             self.server_proc=None; self.playit_proc=None
             self.stateS.emit(IDLE,"[Relay] World versions resolved and synchronized. You can host now.")
         except Exception as error:
+            if new_lock and not selected:
+                # Snapshot/bundle failure has not selected or uploaded any world.
+                # Release only the temporary lock created by THIS Resolve attempt.
+                try:
+                    with self.git_mutex:
+                        self.world_git().delete_owned_lock(new_lock)
+                        self.clear_session()
+                    self.logS.emit("[Safety] Resolve stopped before selecting a version; temporary host lock released. Local files were retained.")
+                except Exception as cleanup:
+                    self.logS.emit("[Safety] Could not confirm temporary lock cleanup; recovery retained: "+str(cleanup))
             self.stateS.emit(RECOVERY_REQUIRED if self.recovery else IDLE,"[Relay] Resolve failed: "+str(error))
 
     def world_git(self):
-        return WorldGit(self.cwd,self.cfg["git_remote"],self.cfg["git_branch"])
+        return WorldGit(self.cwd,self.cfg["git_remote"],self.cfg["git_branch"],progress=self.logS.emit)
+
+    def publish_session(self,g):
+        # Persist the exact intended commit BEFORE upload, so restart recovery can
+        # recognize a successful push even if the app never received its response.
+        if not self.recovery:
+            raise RuntimeError("Missing recovery session; refusing to publish world.")
+        self.recovery["publish_sha"]=g.command("rev-parse","HEAD")
+        save_recovery(self.recovery)
+        g.publish_and_unlock(self.lock_sha or self.recovery.get("lock_sha"))
+
+    def completed_session(self,g):
+        owned=self.lock_sha or (self.recovery or {}).get("lock_sha")
+        if not self.recovery or not owned or g.meaningful_changes():
+            return False
+        head=g.command("rev-parse","HEAD")
+        commit=self.recovery.get("publish_sha",head)  # Accept clean legacy sessions too.
+        return head==commit and g.publication_confirmed(commit,owned)
 
     def clear_session(self):
         clear_recovery()
@@ -84,8 +118,10 @@ class Lifecycle:
         except Exception:
             # If the request outcome cannot be checked, keep the recovery intent.
             _,actual=g.remote_refs()
-            if actual!=sha:self.clear_session()
-            raise
+            if actual!=sha:
+                self.clear_session()
+                raise
+            self.logS.emit("[Git] Host lock confirmed after an interrupted upload response.")
 
     def acquire(self):
         with self.git_mutex:
@@ -323,30 +359,22 @@ class Lifecycle:
             # Recovery must also stop a process left alive by an earlier failed cleanup.
             graceful=self.stop_server_process()
 
-            # Check ownership BEFORE backups, commits or any world upload.
             with self.git_mutex:
-                self.world_git().require_owner(self.lock_sha or (self.recovery or {}).get("lock_sha"))
-
-            if is_recovery or not graceful:
-                # Never ZIP a normal stop; only interrupted sessions get the extra snapshot.
-                self.make_recovery_backup()
-
-            gi=Path(self.cwd)/".gitignore"
-            try:
-                txt=gi.read_text(encoding="utf-8") if gi.exists() else ""
-                if "world/session.lock" not in txt:
-                    gi.write_text(txt.rstrip()+"\nworld/session.lock\n",encoding="utf-8")
-            except Exception: pass
-
-            with self.git_mutex:
-                self.world_git().check_branch()
-                self.world_git().require_owner(self.lock_sha or (self.recovery or {}).get("lock_sha"))
-                self.logS.emit("[Git] Saving session…")
-                self.world_git().stage_session()
-                if run(["git","diff","--cached","--quiet"],self.cwd,30).returncode:
-                    c=run(["git","commit","-m",f"Relay world save - {self.cfg['host_name']}"],self.cwd,60)
-                    if c.returncode: raise RuntimeError(c.stderr or c.stdout)
-                self.world_git().publish_and_unlock(self.lock_sha or (self.recovery or {}).get("lock_sha"))
+                g=self.world_git()
+                g.check_branch()
+                if is_recovery and self.completed_session(g):
+                    self.logS.emit("[Git] Previous session is already saved on GitHub; clearing completed recovery.")
+                else:
+                    # Verify ownership before creating a snapshot or changing files.
+                    g.require_owner(self.lock_sha or (self.recovery or {}).get("lock_sha"))
+                    if is_recovery or not graceful:
+                        self.make_recovery_backup()
+                    self.logS.emit("[Git] Saving session...")
+                    g.stage_session()
+                    if g.command("diff","--cached","--name-only"):
+                        g.command("commit","-m",f"Relay world save - {self.cfg['host_name']}",timeout=600)
+                    self.logS.emit("[Git] Uploading world and releasing host lock (up to 30 minutes; progress every 15 seconds)...")
+                    self.publish_session(g)
                 self.clear_session()
             self.logS.emit("[Relay] ✓ World synchronized.")
 
@@ -368,4 +396,4 @@ class Lifecycle:
         except Exception as e:
             self.logS.emit("[Relay] SYNC ERROR: "+str(e))
             # Keep recovery/lock intact. Never pretend the session is safe.
-            self.stateS.emit(RECOVERY_REQUIRED,"[Relay] ⚠ Synchronization incomplete; lock retained.")
+            self.stateS.emit(RECOVERY_REQUIRED,"[Relay] ⚠ Synchronization not confirmed. Recovery retained; retry Recover & Sync to verify GitHub.")

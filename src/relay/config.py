@@ -10,8 +10,8 @@ def save_recovery(d):
     temp.write_text(json.dumps(d,indent=2),encoding="utf-8")
     temp.replace(RECOVERY_PATH)
 def clear_recovery():
-    try: RECOVERY_PATH.unlink(missing_ok=True)
-    except: pass
+    # A failed unlink must not silently leave a stale recovery on the next launch.
+    RECOVERY_PATH.unlink(missing_ok=True)
 
 DEFAULTS={
  "server_dir":str(DATA_DIR/"server"),"repo_url":"https://github.com/ddvxaggshs/Minecraft_server.git",
